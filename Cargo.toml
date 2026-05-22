@@ -1,0 +1,37 @@
+[package]
+name = "yt-dpl"
+version = "0.1.0"
+edition = "2021"
+description = "A fast video downloader written in Rust"
+license = "MIT"
+repository = "https://github.com/jfinnie/yt-dpl.rs"
+keywords = ["youtube", "downloader", "video", "yt-dlp"]
+categories = ["command-line-utilities", "multimedia::video"]
+rust-version = "1.75"
+
+[[bin]]
+name = "yt-dpl"
+path = "src/main.rs"
+
+[dependencies]
+reqwest = { version = "0.12", features = ["json", "stream"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "color"] }
+anyhow = "1"
+thiserror = "2"
+indicatif = { version = "0.17", features = ["tokio"] }
+futures-util = "0.3"
+regex = "1"
+url = "2"
+m3u8-rs = "6"
+tempfile = "3"
+tokio-util = { version = "0.7", features = ["io"] }
+bytes = "1"
+colored = "2"
+async-trait = "0.1"
+
+[dev-dependencies]
+# serde_json is already a dependency, but listed here for clarity in tests
+tempfile = "3"
