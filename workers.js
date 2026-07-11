@@ -200,6 +200,9 @@ async function fetchAndServeAsset(path) {
   headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
   headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
 
+  // Strip GitHub's sandboxed Content-Security-Policy so scripts can execute
+  headers.delete('content-security-policy');
+
   // Set proper MIME types
   if (path.endsWith('.js')) {
     headers.set('Content-Type', 'text/javascript');
