@@ -63,8 +63,8 @@ function serveHtml(request) {
                     <label for="video-url">YouTube Video URL</label>
                     <input type="text" id="video-url" placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ" value="https://www.youtube.com/watch?v=dQw4w9WgXcQ">
                 </div>
-                <div class="input-field-wrapper proxy-field">
-                    <label for="cors-proxy">CORS Proxy URL <span class="info-tag">Required</span></label>
+                  <div class="input-field-wrapper proxy-field">
+                    <label for="cors-proxy">CORS Proxy URL <span class="info-tag">Optional</span></label>
                     <input type="text" id="cors-proxy" placeholder="${origin}/proxy/" value="${origin}/proxy/">
                 </div>
                 <button id="fetch-btn" class="btn btn-primary">
