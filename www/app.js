@@ -126,36 +126,52 @@ async function start() {
 }
 
 // Load ffmpeg.wasm
-async function toBlobURL(url, mimeType) {
-    const resp = await fetch(url);
-    const blob = await resp.blob();
-    const finalBlob = new Blob([blob], { type: mimeType });
-    return URL.createObjectURL(finalBlob);
-}
-
-// Load ffmpeg.wasm
+// Load ffmpeg.wasm dengan penangkap error ketat
 async function ensureFFmpegLoaded() {
     if (ffmpegLoaded) return;
 
-    logConsole("Initializing ffmpeg.wasm framework...");
-    const { FFmpeg } = window.FFmpegWASM || window.FFmpegWasm || {};
+    try {
+        logConsole("Initializing ffmpeg.wasm framework...");
 
-    ffmpeg = new FFmpeg();
-    ffmpeg.on("log", ({ message }) => logConsole(`[FFmpeg] ${message}`));
+        // Cek apakah library FFmpeg benar-benar terdeteksi di HTML
+        const FFmpegObj = window.FFmpegWASM || window.FFmpegWasm || {};
+        const FFmpeg = FFmpegObj.FFmpeg;
 
-    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+        if (!FFmpeg) {
+            throw new Error("Objek FFmpeg tidak ditemukan! Pastikan file ffmpeg.min.js termuat dengan benar.");
+        }
 
-    // Menggunakan helper toBlobURL buatan sendiri
-    await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript')
-    });
+        ffmpeg = new FFmpeg();
+        ffmpeg.on("log", ({ message }) => logConsole(`[FFmpeg-Core] ${message}`));
 
-    ffmpegLoaded = true;
-    logConsole("ffmpeg.wasm core engine loaded successfully.");
+        // 🛑 FIX INI MBAH: Jangan tembak ke unpkg langsung! 
+        // Kosongkan baseURL agar fetch() menembak ke domain kamu sendiri (Worker)
+        // yang sudah kita modifikasi untuk mem-proxy unpkg + menyuntikkan header COEP.
+        const baseURL = '';
+
+        logConsole("Mempersiapkan core files (meminta izin lewat Worker)...");
+
+        // Sekarang ini akan menembak ke /ffmpeg-core.js di servermu sendiri
+        const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
+        const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
+        const workerURL = await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
+
+        logConsole("Semua file berhasil didownload! Memuat ke memori browser...");
+
+        await ffmpeg.load({
+            coreURL: coreURL,
+            wasmURL: wasmURL,
+            workerURL: workerURL
+        });
+
+        ffmpegLoaded = true;
+        logConsole("✅ ffmpeg.wasm core engine loaded successfully!");
+
+    } catch (err) {
+        logConsole(`❌ GAGAL MEMUAT FFMPEG: ${err.message}`);
+        throw err;
+    }
 }
-
 // Fetch Video Info
 fetchBtn.addEventListener("click", async () => {
     const url = videoUrlInput.value.trim();
