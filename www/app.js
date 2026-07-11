@@ -126,6 +126,14 @@ async function start() {
 }
 
 // Load ffmpeg.wasm
+async function toBlobURL(url, mimeType) {
+    const resp = await fetch(url);
+    const blob = await resp.blob();
+    const finalBlob = new Blob([blob], { type: mimeType });
+    return URL.createObjectURL(finalBlob);
+}
+
+// Load ffmpeg.wasm
 async function ensureFFmpegLoaded() {
     if (ffmpegLoaded) return;
 
@@ -135,14 +143,13 @@ async function ensureFFmpegLoaded() {
     ffmpeg = new FFmpeg();
     ffmpeg.on("log", ({ message }) => logConsole(`[FFmpeg] ${message}`));
 
-    // Tentukan Base URL dari CDN
     const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
 
-    // Panggil fungsi load menggunakan toBlobURL (Pastikan FFmpegUtil sudah ter-load di HTML)
+    // Menggunakan helper toBlobURL buatan sendiri
     await ffmpeg.load({
-        coreURL: await FFmpegUtil.toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await FFmpegUtil.toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        workerURL: await FFmpegUtil.toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript')
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript')
     });
 
     ffmpegLoaded = true;
