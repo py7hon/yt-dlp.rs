@@ -1,0 +1,27 @@
+{
+  "name": "yt-dlp",
+  "type": "module",
+  "description": "A fast video downloader written in Rust",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joshfinnie/yt-dlp.rs"
+  },
+  "files": [
+    "yt_dlp_bg.wasm",
+    "yt_dlp.js",
+    "yt_dlp.d.ts"
+  ],
+  "main": "yt_dlp.js",
+  "types": "yt_dlp.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ],
+  "keywords": [
+    "youtube",
+    "downloader",
+    "video",
+    "yt-dlp"
+  ]
+}
