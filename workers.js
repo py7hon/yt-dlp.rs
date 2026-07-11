@@ -21,7 +21,7 @@ async function handleRequest(request) {
 
   // 2. Serve main static files (inline or proxy fallback)
   if (path === '/' || path === '/index.html') {
-    return serveHtml();
+    return serveHtml(request);
   }
 
   // 3. Serve other static/binary assets by streaming from the source repository,
@@ -30,7 +30,8 @@ async function handleRequest(request) {
 }
 
 // Serves the main index.html with cross-origin isolation headers (required for ffmpeg.wasm)
-function serveHtml() {
+function serveHtml(request) {
+  const origin = new URL(request.url).origin;
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -64,7 +65,7 @@ function serveHtml() {
                 </div>
                 <div class="input-field-wrapper proxy-field">
                     <label for="cors-proxy">CORS Proxy URL <span class="info-tag">Required</span></label>
-                    <input type="text" id="cors-proxy" placeholder="https://your-worker.workers.dev/proxy/" value="">
+                    <input type="text" id="cors-proxy" placeholder="${origin}/proxy/" value="${origin}/proxy/">
                 </div>
                 <button id="fetch-btn" class="btn btn-primary">
                     <span class="btn-text">Fetch Info</span>
