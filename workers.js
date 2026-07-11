@@ -1,9 +1,6 @@
 // Cloudflare Worker: Single-file Deployment (workers.js)
 // Serves static assets with COOP/COEP cross-origin headers, and provides CORS proxy routes.
 
-// CONFIGURATION: Set this to your GitHub repository path where the assets (WASM/ffmpeg/etc.) are pushed.
-// This allows the worker to stream large assets (like the 32MB ffmpeg-core.wasm and 1.8MB yt_dlp_bg.wasm)
-// without hitting the 1MB free-tier script size limit of Cloudflare Workers.
 const ASSETS_BASE_URL = "https://raw.githubusercontent.com/py7hon/yt-dlp.rs/main/www";
 
 addEventListener('fetch', event => {
@@ -24,12 +21,29 @@ async function handleRequest(request) {
     return serveHtml(request);
   }
 
-  // 3. Serve other static/binary assets by streaming from the source repository,
-  // making sure they are served with strict COOP/COEP/CORP headers
+  // --- FIX INI MBAH: Intercept ffmpeg-core & Proxy dari CDN ---
+  // Karena file core terlalu besar dan sering gagal ditarik dari GitHub, 
+  // kita ambil langsung dari CDN tapi tetap injek COOP/COEP headers di Worker.
+  // Catatan: Ini menggunakan path v0.12.x. Jika ffmpeg.min.js kamu versi 0.11.x, 
+  // hapus "/umd" dari URL di bawah.
+  // --- FIX INI MBAH: Proxy FFmpeg langsung dari R2 Cloudflare ---
+  if (path === '/ffmpeg-core.js') {
+    return fetchAndServeAsset(path, 'https://repository.eu.org/ffmpeg-core.js');
+  }
+  if (path === '/ffmpeg-core.wasm') {
+    return fetchAndServeAsset(path, 'https://repository.eu.org/ffmpeg-core.wasm');
+  }
+  if (path === '/ffmpeg-core.worker.js') {
+    return fetchAndServeAsset(path, 'https://repository.eu.org/ffmpeg-core.worker.js');
+  }
+  // -------------------------------------------------------------
+  // -------------------------------------------------------------
+
+  // 3. Serve other static/binary assets by streaming from the source repository
   return fetchAndServeAsset(path);
 }
 
-// Serves the main index.html with cross-origin isolation headers (required for ffmpeg.wasm)
+// Serves the main index.html with cross-origin isolation headers
 function serveHtml(request) {
   const origin = new URL(request.url).origin;
   const html = `<!DOCTYPE html>
@@ -73,7 +87,7 @@ function serveHtml(request) {
                 </button>
             </div>
             <div class="proxy-note">
-                <p>⚡ <strong>Cloudflare Worker:</strong> The proxy has been auto-configured to route through this Worker instance.</p>
+                <p><strong>Proxy:</strong> The proxy has been auto-configured to route through this Website, but if proxy not working you can use it from \`www/cors-proxy.js\` at <a href="https://github.com/py7hon/yt-dlp.rs" target="_blank">this repository</a>.</p>
             </div>
         </section>
 
@@ -168,9 +182,16 @@ function serveHtml(request) {
                 <pre id="log-console" class="log-console">Initialized WASM Downloader. Waiting for download triggers...</pre>
             </div>
         </section>
+        <footer style="text-align: center; margin-top: 2rem; padding: 1rem; font-size: 0.85rem; opacity: 0.8;">
+            <p>
+                originally yt-dlp.rs by <a href="https://github.com/joshfinnie/yt-dlp.rs" target="_blank" style="color: inherit;">joshfinnie/yt-dlp.rs</a> 
+                | 
+                WASM converted by <a href="https://github.com/py7hon/yt-dlp.rs" target="_blank" style="color: inherit;">py7hon/yt-dlp.rs</a>
+            </p>
+        </footer>
     </main>
 
-    <script type="module" src="app.js"></script>
+    <script type="module" src="app.js?v=5"></script>
 </body>
 </html>`;
 
@@ -184,26 +205,22 @@ function serveHtml(request) {
   });
 }
 
-// Proxies/fetches static resources from GitHub repository or raw branch,
-// appending all browser-mandatory cross-origin headers.
-async function fetchAndServeAsset(path) {
-  const assetUrl = `${ASSETS_BASE_URL}${path}`;
+// Proxies/fetches static resources, now supports optional overrideUrl for CDNs
+async function fetchAndServeAsset(path, overrideUrl = null) {
+  // Jika overrideUrl diset (untuk file FFmpeg), pakai itu. Kalau tidak, ambil dari GitHub.
+  const assetUrl = overrideUrl || `${ASSETS_BASE_URL}${path}`;
   const response = await fetch(assetUrl);
 
   if (!response.ok) {
     return new Response(`Asset ${path} not found. Build or configuration error.`, { status: 404 });
   }
 
-  // Create mutable headers to append the COOP/COEP/CORP keys
   const headers = new Headers(response.headers);
   headers.set('Cross-Origin-Opener-Policy', 'same-origin');
   headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
   headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
-
-  // Strip GitHub's sandboxed Content-Security-Policy so scripts can execute
   headers.delete('content-security-policy');
 
-  // Set proper MIME types
   if (path.endsWith('.js')) {
     headers.set('Content-Type', 'text/javascript');
   } else if (path.endsWith('.wasm')) {
@@ -219,9 +236,8 @@ async function fetchAndServeAsset(path) {
   });
 }
 
-// Proxy Core Module: handles target fetch and streams response
+// Proxy Core Module
 async function handleProxy(request, targetUrlStr) {
-  // Handle CORS Preflight OPTIONS
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       headers: {
@@ -235,7 +251,6 @@ async function handleProxy(request, targetUrlStr) {
     });
   }
 
-  // Sanitize target URL string
   let cleanUrlStr = decodeURIComponent(targetUrlStr);
   if (cleanUrlStr.startsWith('https:/') && !cleanUrlStr.startsWith('https://')) {
     cleanUrlStr = 'https://' + cleanUrlStr.substring(7);
@@ -247,25 +262,21 @@ async function handleProxy(request, targetUrlStr) {
     const targetUrl = new URL(cleanUrlStr);
     const headers = new Headers(request.headers);
 
-    // Map custom CORS User-Agent back
     if (headers.has('x-cors-user-agent')) {
       headers.set('user-agent', headers.get('x-cors-user-agent'));
       headers.delete('x-cors-user-agent');
     }
 
-    // Standardize YouTube / GoogleVideo CDN headers
     if (targetUrl.hostname.endsWith('youtube.com') || targetUrl.hostname.endsWith('googlevideo.com')) {
       headers.set('origin', 'https://www.youtube.com');
       headers.set('referer', 'https://www.youtube.com/');
     }
 
-    // Force Android/iOS headers for media CDN playback routes
     if (targetUrl.hostname.endsWith('googlevideo.com')) {
       headers.set('user-agent', 'com.google.ios.youtube/21.02.3 (iPhone16,2; U; CPU iPhone OS 18_3_2 like Mac OS X)');
-      headers.delete('accept-encoding'); // Bypass browser-side GZIP issues
+      headers.delete('accept-encoding');
     }
 
-    // Strip client-specific details to bypass Cloudflare and host firewall rules
     headers.delete('host');
     headers.delete('cookie');
     for (const [key] of headers.entries()) {
@@ -274,10 +285,6 @@ async function handleProxy(request, targetUrlStr) {
       }
     }
 
-    // Dynamic Visitor Cookie Bypass:
-    // If it's a Player API call, fetch fresh visitor cookies from YouTube's main page first.
-    // This makes YouTube treat the request as a legitimate web session instead of a bot
-    // and successfully bypasses the rate-limit/bot-detection (LOGIN_REQUIRED).
     if (targetUrl.pathname.endsWith('/youtubei/v1/player')) {
       try {
         const cookieRes = await fetch('https://www.youtube.com/', {
@@ -295,12 +302,9 @@ async function handleProxy(request, targetUrlStr) {
             headers.set('cookie', cookieStr);
           }
         }
-      } catch (err) {
-        // Fallback gracefully to non-cookie request if visitor check fails
-      }
+      } catch (err) { }
     }
 
-    // Execute target request (follow redirects automatically)
     const targetResponse = await fetch(targetUrl.href, {
       method: request.method,
       headers: headers,
@@ -310,7 +314,6 @@ async function handleProxy(request, targetUrlStr) {
 
     const responseHeaders = new Headers(targetResponse.headers);
 
-    // Apply CORS/CORP headers
     responseHeaders.set('Access-Control-Allow-Origin', '*');
     responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
     responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, X-YouTube-Client-Name, X-YouTube-Client-Version, X-Cors-User-Agent, Range');
@@ -318,7 +321,6 @@ async function handleProxy(request, targetUrlStr) {
     responseHeaders.set('Access-Control-Allow-Credentials', 'true');
     responseHeaders.set('Cross-Origin-Resource-Policy', 'cross-origin');
 
-    // Remove third-party COOP/COEP headers that block browser fetches
     responseHeaders.delete('cross-origin-opener-policy');
     responseHeaders.delete('cross-origin-embedder-policy');
     responseHeaders.delete('content-security-policy');
