@@ -274,6 +274,32 @@ async function handleProxy(request, targetUrlStr) {
       }
     }
 
+    // Dynamic Visitor Cookie Bypass:
+    // If it's a Player API call, fetch fresh visitor cookies from YouTube's main page first.
+    // This makes YouTube treat the request as a legitimate web session instead of a bot
+    // and successfully bypasses the rate-limit/bot-detection (LOGIN_REQUIRED).
+    if (targetUrl.pathname.endsWith('/youtubei/v1/player')) {
+      try {
+        const cookieRes = await fetch('https://www.youtube.com/', {
+          headers: {
+            'user-agent': headers.get('user-agent') || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+          }
+        });
+        const setCookies = cookieRes.headers.get('set-cookie');
+        if (setCookies) {
+          const cookieStr = setCookies.split(',')
+            .map(c => c.split(';')[0].trim())
+            .filter(c => c && !c.includes('path=') && !c.includes('domain='))
+            .join('; ');
+          if (cookieStr) {
+            headers.set('cookie', cookieStr);
+          }
+        }
+      } catch (err) {
+        // Fallback gracefully to non-cookie request if visitor check fails
+      }
+    }
+
     // Execute target request (follow redirects automatically)
     const targetResponse = await fetch(targetUrl.href, {
       method: request.method,
