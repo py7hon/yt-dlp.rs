@@ -41,7 +41,11 @@
                 </button>
             </div>
             <div class="proxy-note">
-                <p>⚠️ <strong>CORS Proxy:</strong> Browsers block direct YouTube API requests. Run a local CORS proxy (e.g. <code>npx cors-anywhere</code> or <code>local-cors-proxy</code> on port 8080) and set it here.</p>
+                <p>💡 <strong>Note on Proxies:</strong> Deployed/Cloudflare Worker proxies can trigger YouTube's bot detection (returning <code>429 Too Many Requests</code> or <code>LOGIN_REQUIRED</code>) because Cloudflare IPs are shared. If this happens, run a <strong>local proxy</strong> on your machine to route requests through your own residential IP:</p>
+                <div class="code-box-wrapper">
+                    <code>npx local-cors-proxy --proxyUrl https://www.youtube.com --port 8080 --origin *</code>
+                </div>
+                <p class="sub-text">Then change the CORS Proxy URL input above to <code>http://localhost:8080/</code>.</p>
             </div>
         </section>
 
