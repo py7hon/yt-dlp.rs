@@ -126,6 +126,25 @@ async function start() {
 }
 
 // Load ffmpeg.wasm
+// Helper mandiri dengan pelacakan (Tracking)
+async function toBlobURL(url, mimeType) {
+    try {
+        logConsole(`[Download] Mendownload ${url.split('/').pop()} ...`);
+        const resp = await fetch(url);
+
+        if (!resp.ok) {
+            throw new Error(`Gagal fetch ${url} (Status: ${resp.status})`);
+        }
+
+        const blob = await resp.blob();
+        const finalBlob = new Blob([blob], { type: mimeType });
+        return URL.createObjectURL(finalBlob);
+    } catch (err) {
+        logConsole(`❌ ERROR Download: ${err.message}`);
+        throw err;
+    }
+}
+
 // Load ffmpeg.wasm dengan penangkap error ketat
 async function ensureFFmpegLoaded() {
     if (ffmpegLoaded) return;
@@ -172,6 +191,7 @@ async function ensureFFmpegLoaded() {
         throw err;
     }
 }
+
 // Fetch Video Info
 fetchBtn.addEventListener("click", async () => {
     const url = videoUrlInput.value.trim();
