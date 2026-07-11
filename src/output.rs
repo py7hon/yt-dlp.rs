@@ -280,7 +280,8 @@ mod tests {
     fn builds_path_with_directory() {
         let i = info("X", "T", "U");
         let path = build_output_path("downloads/%(title)s.%(ext)s", &i, "mkv", false);
-        assert_eq!(path.to_str().unwrap(), "downloads/T.mkv");
+        let expected = std::path::PathBuf::from("downloads").join("T.mkv");
+        assert_eq!(path, expected);
     }
 
     #[test]

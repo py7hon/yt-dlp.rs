@@ -9,29 +9,44 @@ keywords = ["youtube", "downloader", "video", "yt-dlp"]
 categories = ["command-line-utilities", "multimedia::video"]
 rust-version = "1.75"
 
+[lib]
+name = "yt_dlp"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
 [[bin]]
 name = "yt-dlp"
 path = "src/main.rs"
 
 [dependencies]
 reqwest = { version = "0.12", features = ["json", "stream", "cookies"] }
-tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive", "color"] }
 anyhow = "1"
 thiserror = "2"
-indicatif = { version = "0.17", features = ["tokio"] }
 futures-util = "0.3"
 regex = "1"
 url = "2"
 m3u8-rs = "6"
-tempfile = "3"
 tokio-util = { version = "0.7", features = ["io"] }
 bytes = "1"
 colored = "2"
 async-trait = "0.1"
 
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["full"] }
+indicatif = { version = "0.17", features = ["tokio"] }
+tempfile = "3"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+tokio = { version = "1", features = ["sync", "rt", "macros"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console"] }
+gloo-timers = { version = "0.3", features = ["futures"] }
+serde-wasm-bindgen = "0.6"
+
 [dev-dependencies]
-# serde_json is already a dependency, but listed here for clarity in tests
 tempfile = "3"

@@ -3,14 +3,19 @@ pub mod http;
 
 use crate::types::{DownloadOptions, Format};
 use anyhow::{Context, Result};
-use reqwest::cookie::Jar;
 use reqwest::Client;
+
+#[cfg(not(target_arch = "wasm32"))]
+use reqwest::cookie::Jar;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
 pub use hls::HlsDownloader;
 pub use http::HttpDownloader;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn load_netscape_cookies(path: &str, jar: &Arc<Jar>) -> Result<()> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("Failed to read cookies file: {}", path))?;
@@ -38,6 +43,7 @@ fn load_netscape_cookies(path: &str, jar: &Arc<Jar>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn build_client(opts: &DownloadOptions) -> Result<Client> {
     let mut builder = Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
@@ -59,6 +65,14 @@ pub fn build_client(opts: &DownloadOptions) -> Result<Client> {
     builder.build().context("Failed to build HTTP client")
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn build_client(_opts: &DownloadOptions) -> Result<Client> {
+    Client::builder()
+        .build()
+        .context("Failed to build HTTP client")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn download_format(
     client: &Client,
     fmt: &Format,

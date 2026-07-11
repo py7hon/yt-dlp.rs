@@ -56,9 +56,83 @@ impl YoutubeExtractor {
         &self,
         video_id: &str,
         client: &Client,
+        cors_proxy: Option<&str>,
     ) -> Result<(PlayerResponse, String)> {
+        let url = if let Some(proxy) = cors_proxy {
+            format!("{}{}", proxy, INNERTUBE_URL)
+        } else {
+            INNERTUBE_URL.to_string()
+        };
+
         // Try clients in order; return first OK response.
+        // Order matters: ANDROID (clean) URLs are downloadable via a plain HTTPS proxy.
+        // IOS URLs require TLS fingerprint matching (JA3) that a Node.js proxy cannot replicate,
+        // causing HTTP 403 on download even with the correct User-Agent.
         let attempts = [
+            // 1. Clean ANDROID — produces downloadable URLs via plain HTTPS proxy
+            (
+                "3",
+                "21.02.35",
+                ANDROID_UA,
+                serde_json::json!({
+                    "context": {
+                        "client": {
+                            "clientName": "ANDROID",
+                            "clientVersion": "21.02.35",
+                            "androidSdkVersion": 30,
+                            "userAgent": ANDROID_UA,
+                            "osName": "Android",
+                            "osVersion": "11"
+                        }
+                    },
+                    "videoId": video_id
+                }),
+            ),
+            // 2. ANDROID with age-bypass — for age-restricted videos
+            (
+                "3",
+                "21.02.35",
+                ANDROID_UA,
+                serde_json::json!({
+                    "context": {
+                        "client": {
+                            "clientName": "ANDROID",
+                            "clientVersion": "21.02.35",
+                            "androidSdkVersion": 30,
+                            "userAgent": ANDROID_UA,
+                            "osName": "Android",
+                            "osVersion": "11"
+                        }
+                    },
+                    "videoId": video_id,
+                    "params": "CgIQBg=="
+                }),
+            ),
+            // 3. ANDROID_VR clean
+            (
+                "28",
+                "1.65.10",
+                INNERTUBE_UA,
+                serde_json::json!({
+                    "context": {
+                        "client": {
+                            "clientName": "ANDROID_VR",
+                            "clientVersion": "1.65.10",
+                            "deviceMake": "Oculus",
+                            "deviceModel": "Quest 3",
+                            "androidSdkVersion": 32,
+                            "userAgent": INNERTUBE_UA,
+                            "osName": "Android",
+                            "osVersion": "12L"
+                        }
+                    },
+                    "videoId": video_id,
+                    "playbackContext": {
+                        "contentPlaybackContext": { "html5Preference": "HTML5_PREF_WANTS" }
+                    }
+                }),
+            ),
+            // 4. ANDROID_VR with age-bypass
             (
                 "28",
                 "1.65.10",
@@ -83,43 +157,21 @@ impl YoutubeExtractor {
                     "params": "CgIQBg=="
                 }),
             ),
+            // 5. WEB — fallback, may return cipher-encrypted URLs
             (
-                "5",
-                "21.02.3",
-                IOS_UA,
+                "1",
+                "2.20241108.01.00",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                 serde_json::json!({
                     "context": {
                         "client": {
-                            "clientName": "IOS",
-                            "clientVersion": "21.02.3",
-                            "deviceMake": "Apple",
-                            "deviceModel": "iPhone16,2",
-                            "userAgent": IOS_UA,
-                            "osName": "iPhone",
-                            "osVersion": "18.3.2.22D82"
+                            "clientName": "WEB",
+                            "clientVersion": "2.20241108.01.00",
+                            "hl": "en",
+                            "gl": "US"
                         }
                     },
-                    "videoId": video_id,
-                    "params": "CgIQBg=="
-                }),
-            ),
-            (
-                "3",
-                "21.02.35",
-                ANDROID_UA,
-                serde_json::json!({
-                    "context": {
-                        "client": {
-                            "clientName": "ANDROID",
-                            "clientVersion": "21.02.35",
-                            "androidSdkVersion": 30,
-                            "userAgent": ANDROID_UA,
-                            "osName": "Android",
-                            "osVersion": "11"
-                        }
-                    },
-                    "videoId": video_id,
-                    "params": "CgIQBg=="
+                    "videoId": video_id
                 }),
             ),
         ];
@@ -127,13 +179,24 @@ impl YoutubeExtractor {
         let mut last_err: Option<String> = None;
 
         for (client_name_id, client_version, ua, body) in &attempts {
-            let resp = client
-                .post(INNERTUBE_URL)
-                .header("User-Agent", *ua)
+            let mut req = client
+                .post(&url)
                 .header("Content-Type", "application/json")
                 .header("X-YouTube-Client-Name", *client_name_id)
-                .header("X-YouTube-Client-Version", *client_version)
-                .header("Origin", "https://www.youtube.com")
+                .header("X-YouTube-Client-Version", *client_version);
+
+            #[cfg(target_arch = "wasm32")]
+            {
+                req = req.header("X-Cors-User-Agent", *ua);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                req = req
+                    .header("User-Agent", *ua)
+                    .header("Origin", "https://www.youtube.com");
+            }
+
+            let resp = req
                 .json(body)
                 .send()
                 .await
@@ -155,7 +218,14 @@ impl YoutubeExtractor {
                 .map(|ps| ps.status.as_str())
                 .unwrap_or("OK");
 
-            if status == "OK" {
+            let has_formats = player.streaming_data.as_ref().map_or(false, |sd| {
+                sd.formats.as_ref().map_or(false, |f| !f.is_empty())
+                    || sd.adaptive_formats.as_ref().map_or(false, |f| !f.is_empty())
+                    || sd.hls_manifest_url.is_some()
+                    || sd.dash_manifest_url.is_some()
+            });
+
+            if status == "OK" && has_formats {
                 return Ok((player, ua.to_string()));
             }
 
@@ -164,7 +234,13 @@ impl YoutubeExtractor {
                     .playability_status
                     .as_ref()
                     .and_then(|ps| ps.reason.clone())
-                    .unwrap_or_else(|| status.to_string()),
+                    .unwrap_or_else(|| {
+                        if !has_formats {
+                            "No streaming formats returned".to_string()
+                        } else {
+                            status.to_string()
+                        }
+                    }),
             );
         }
 
@@ -173,13 +249,19 @@ impl YoutubeExtractor {
         // in the page (e.g. when all API clients are geo-blocked or client-restricted).
         // Formats from this path carry c=WEB in the URL, so use a browser UA for downloads.
         const WEB_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-        if let Some(player) = self.fetch_webpage_player_response(video_id, client).await {
+        if let Some(player) = self.fetch_webpage_player_response(video_id, client, cors_proxy).await {
             let status = player
                 .playability_status
                 .as_ref()
                 .map(|ps| ps.status.as_str())
                 .unwrap_or("OK");
-            if status == "OK" {
+            let has_formats = player.streaming_data.as_ref().map_or(false, |sd| {
+                sd.formats.as_ref().map_or(false, |f| !f.is_empty())
+                    || sd.adaptive_formats.as_ref().map_or(false, |f| !f.is_empty())
+                    || sd.hls_manifest_url.is_some()
+                    || sd.dash_manifest_url.is_some()
+            });
+            if status == "OK" && has_formats {
                 return Ok((player, WEB_UA.to_string()));
             }
         }
@@ -194,14 +276,30 @@ impl YoutubeExtractor {
         &self,
         video_id: &str,
         client: &Client,
+        cors_proxy: Option<&str>,
     ) -> Option<PlayerResponse> {
-        let url = format!("https://www.youtube.com/watch?v={}", video_id);
-        let text = client
-            .get(&url)
-            .header(
+        let watch_url = format!("https://www.youtube.com/watch?v={}", video_id);
+        let url = if let Some(proxy) = cors_proxy {
+            format!("{}{}", proxy, watch_url)
+        } else {
+            watch_url
+        };
+        let mut req = client.get(&url);
+        #[cfg(target_arch = "wasm32")]
+        {
+            req = req.header(
+                "X-Cors-User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            );
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            req = req.header(
                 "User-Agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            )
+            );
+        }
+        let text = req
             .header("Accept-Language", "en-US,en;q=0.9")
             .send()
             .await
@@ -214,14 +312,29 @@ impl YoutubeExtractor {
         serde_json::from_str::<PlayerResponse>(&json_str).ok()
     }
 
-    async fn fetch_webpage_info(&self, video_id: &str, client: &Client) -> Option<WebpageInfo> {
-        let url = format!("https://www.youtube.com/watch?v={}", video_id);
-        let resp = client
-            .get(&url)
-            .header(
+    async fn fetch_webpage_info(&self, video_id: &str, client: &Client, cors_proxy: Option<&str>) -> Option<WebpageInfo> {
+        let watch_url = format!("https://www.youtube.com/watch?v={}", video_id);
+        let url = if let Some(proxy) = cors_proxy {
+            format!("{}{}", proxy, watch_url)
+        } else {
+            watch_url
+        };
+        let mut req = client.get(&url);
+        #[cfg(target_arch = "wasm32")]
+        {
+            req = req.header(
+                "X-Cors-User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            );
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            req = req.header(
                 "User-Agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            )
+            );
+        }
+        let resp = req
             .header("Accept-Language", "en-US,en;q=0.9")
             .send()
             .await
@@ -409,9 +522,16 @@ impl YoutubeExtractor {
 }
 
 fn extract_json_object(text: &str, key: &str) -> Option<String> {
-    let marker = format!("{} =", key);
-    let start = text.find(&marker)?;
-    let brace_start = text[start..].find('{')? + start;
+    let start = text.find(key)?;
+    let slice_from_key = &text[start..];
+    let brace_offset = slice_from_key.find('{')?;
+    
+    // Ensure the brace is near the key (e.g. within 60 chars) to prevent false matches
+    if brace_offset > 60 {
+        return None;
+    }
+
+    let brace_start = start + brace_offset;
     let slice = &text[brace_start..];
     let mut depth = 0usize;
     let mut in_string = false;
@@ -491,7 +611,7 @@ fn parse_upload_date(date: &str) -> Option<String> {
     }
 }
 
-#[async_trait]
+#[async_trait(?Send)]
 impl Extractor for YoutubeExtractor {
     fn name(&self) -> &str {
         "youtube"
@@ -502,11 +622,22 @@ impl Extractor for YoutubeExtractor {
     }
 
     async fn extract(&self, url: &str, client: &Client) -> Result<VideoInfo> {
+        self.extract_with_proxy(url, client, None).await
+    }
+}
+
+impl YoutubeExtractor {
+    pub async fn extract_with_proxy(
+        &self,
+        url: &str,
+        client: &Client,
+        cors_proxy: Option<&str>,
+    ) -> Result<VideoInfo> {
         let video_id = Self::extract_video_id(url)
             .ok_or_else(|| anyhow!("Could not extract YouTube video ID from: {}", url))?;
 
         let (player, download_ua) = self
-            .fetch_player_response(&video_id, client)
+            .fetch_player_response(&video_id, client, cors_proxy)
             .await
             .context("Failed to fetch player response")?;
 
@@ -640,15 +771,15 @@ impl Extractor for YoutubeExtractor {
         let view_count = vd.view_count.as_deref().and_then(|s| s.parse::<u64>().ok());
 
         // Fetch supplemental page info for likes/channel URL
-        let webpage = self.fetch_webpage_info(&video_id, client).await;
+        let webpage = self.fetch_webpage_info(&video_id, client, cors_proxy).await;
 
         let channel_url = webpage
             .as_ref()
             .and_then(|w| w.channel_url.clone())
             .or_else(|| {
                 vd.channel_id
-                    .as_deref()
-                    .map(|id| format!("https://www.youtube.com/channel/{}", id))
+                     .as_deref()
+                     .map(|id| format!("https://www.youtube.com/channel/{}", id))
             });
 
         let channel_id = vd.channel_id.clone();
@@ -773,7 +904,7 @@ struct StreamingData {
 struct StreamingFormat {
     itag: u32,
     url: Option<String>,
-    #[serde(rename = "signatureCipher")]
+    #[serde(rename = "signatureCipher", alias = "cipher")]
     signature_cipher: Option<String>,
     #[serde(rename = "mimeType")]
     mime_type: String,

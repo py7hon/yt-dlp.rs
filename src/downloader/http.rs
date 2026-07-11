@@ -1,11 +1,17 @@
 use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use futures_util::StreamExt;
-use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
+
+#[cfg(not(target_arch = "wasm32"))]
+use indicatif::{ProgressBar, ProgressStyle};
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::fs::File;
+#[cfg(not(target_arch = "wasm32"))]
 use tokio::io::AsyncWriteExt;
 
 pub struct HttpDownloader {
@@ -16,6 +22,7 @@ pub struct HttpDownloader {
     quiet: bool,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn is_fatal_error(e: &anyhow::Error) -> bool {
     let msg = e.to_string();
     // 403/404/410 won't be fixed by retrying
@@ -38,7 +45,10 @@ impl HttpDownloader {
             quiet,
         }
     }
+}
 
+#[cfg(not(target_arch = "wasm32"))]
+impl HttpDownloader {
     pub async fn download(
         &self,
         url: &str,
@@ -181,3 +191,63 @@ impl HttpDownloader {
         Ok(bytes_written)
     }
 }
+
+#[cfg(target_arch = "wasm32")]
+impl HttpDownloader {
+    pub async fn download_to_vec_with_progress<F>(
+        &self,
+        url: &str,
+        headers: &std::collections::HashMap<String, String>,
+        cors_proxy: Option<&str>,
+        progress_callback: F,
+    ) -> Result<Vec<u8>>
+    where
+        F: Fn(u64, u64) + Send + Sync + 'static,
+    {
+        let final_url = if let Some(proxy) = cors_proxy {
+            format!("{}{}", proxy, url)
+        } else {
+            url.to_string()
+        };
+
+        let mut req = self.client.get(&final_url);
+
+        // Set YouTube-compatible headers so the CDN accepts the download.
+        // NOTE: Browsers silently block setting `User-Agent` via fetch(), so we use
+        // `X-Cors-User-Agent` which our CORS proxy remaps to `User-Agent` before forwarding.
+        req = req.header("X-Cors-User-Agent", "com.google.ios.youtube/21.02.3 (iPhone16,2; U; CPU iPhone OS 18_3_2 like Mac OS X)");
+        req = req.header("Origin", "https://www.youtube.com");
+        req = req.header("Referer", "https://www.youtube.com/");
+
+        // Apply any extra headers from the format (skip identity/origin/referer/ua which we set above)
+        for (k, v) in headers {
+            let k_lower = k.to_lowercase();
+            if k_lower != "user-agent"
+                && k_lower != "origin"
+                && k_lower != "referer"
+                && k_lower != "host"
+            {
+                req = req.header(k.as_str(), v.as_str());
+            }
+        }
+
+        let resp = req.send().await.context("HTTP request failed")?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {} for {}", status.as_u16(), url));
+        }
+
+        let total_size = resp.content_length().unwrap_or(0);
+        let mut stream = resp.bytes_stream();
+        let mut data = Vec::with_capacity(total_size as usize);
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.context("Stream error")?;
+            data.extend_from_slice(&chunk);
+            progress_callback(data.len() as u64, total_size);
+        }
+
+        Ok(data)
+    }
+}
+

@@ -7,7 +7,7 @@ use reqwest::Client;
 
 pub use youtube::YoutubeExtractor;
 
-#[async_trait]
+#[async_trait(?Send)]
 pub trait Extractor: Send + Sync {
     fn name(&self) -> &str;
     fn suitable(&self, url: &str) -> bool;

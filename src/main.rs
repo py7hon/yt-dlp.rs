@@ -1,22 +1,13 @@
-mod downloader;
-mod error;
-mod extractor;
-mod output;
-mod postprocessor;
-mod selector;
-mod types;
-mod utils;
-
 use anyhow::{anyhow, Context, Result};
 use clap::Parser;
 use colored::Colorize;
-use downloader::{build_client, download_format};
-use extractor::get_extractor;
-use output::build_output_path;
-use postprocessor::{ffmpeg_available, ffmpeg_extract_audio, ffmpeg_merge};
-use selector::{parse_selector, select_formats, SelectedFormats};
-use types::{DownloadOptions, Format, VideoInfo};
-use utils::{
+use yt_dlp::downloader::{build_client, download_format};
+use yt_dlp::extractor::get_extractor;
+use yt_dlp::output::build_output_path;
+use yt_dlp::postprocessor::{ffmpeg_available, ffmpeg_extract_audio, ffmpeg_merge};
+use yt_dlp::selector::{parse_selector, select_formats, SelectedFormats};
+use yt_dlp::types::{DownloadOptions, Format, VideoInfo};
+use yt_dlp::utils::{
     format_bytes, parse_rate_limit, print_error, print_info, print_success, print_warning,
 };
 
@@ -216,7 +207,7 @@ async fn process_url(
 
     // --print field
     if let Some(field) = &args.print_field {
-        let value = output::expand_template(field, &info, "");
+        let value = yt_dlp::output::expand_template(field, &info, "");
         println!("{}", value);
         return Ok(());
     }
@@ -568,7 +559,7 @@ async fn write_subtitles(
 ) -> Result<()> {
     let all_langs = opts.sub_langs.iter().any(|l| l == "all");
 
-    let mut to_write: Vec<(String, &crate::types::Subtitle)> = Vec::new();
+    let mut to_write: Vec<(String, &yt_dlp::types::Subtitle)> = Vec::new();
 
     if opts.write_subs {
         for (lang, subs) in &info.subtitles {

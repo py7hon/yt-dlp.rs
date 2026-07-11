@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>yt-dlp WASM - Browser YouTube Downloader</title>
+    <link rel="stylesheet" href="index.css">
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Plus+Jakarta+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <!-- Local ffmpeg.wasm script (prevents COEP blocks) -->
+    <script src="ffmpeg.min.js"></script>
+</head>
+<body>
+    <div class="glass-bg-accent-1"></div>
+    <div class="glass-bg-accent-2"></div>
+    
+    <main class="app-container">
+        <header class="app-header">
+            <div class="logo-area">
+                <span class="logo-badge">WASM</span>
+                <h1>yt-dlp<span class="accent-text">.rs</span></h1>
+            </div>
+            <p class="subtitle">Download & merge YouTube video & audio entirely client-side in your browser using WebAssembly & ffmpeg.wasm</p>
+        </header>
+
+        <section class="card config-card">
+            <div class="input-group-row">
+                <div class="input-field-wrapper url-field">
+                    <label for="video-url">YouTube Video URL</label>
+                    <input type="text" id="video-url" placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ" value="https://www.youtube.com/watch?v=dQw4w9WgXcQ">
+                </div>
+                <div class="input-field-wrapper proxy-field">
+                    <label for="cors-proxy">CORS Proxy URL <span class="info-tag">Required</span></label>
+                    <input type="text" id="cors-proxy" placeholder="http://localhost:8080/" value="http://localhost:8080/">
+                </div>
+                <button id="fetch-btn" class="btn btn-primary">
+                    <span class="btn-text">Fetch Info</span>
+                    <span class="loader-spinner hidden"></span>
+                </button>
+            </div>
+            <div class="proxy-note">
+                <p>⚠️ <strong>CORS Proxy:</strong> Browsers block direct YouTube API requests. Run a local CORS proxy (e.g. <code>npx cors-anywhere</code> or <code>local-cors-proxy</code> on port 8080) and set it here.</p>
+            </div>
+        </section>
+
+        <!-- Video Details & Formats (hidden by default) -->
+        <section id="results-card" class="card results-card hidden">
+            <div class="video-meta-row">
+                <div class="video-thumbnail-wrapper">
+                    <img id="video-thumbnail" src="" alt="Video Thumbnail">
+                </div>
+                <div class="video-info-details">
+                    <h2 id="video-title">Video Title</h2>
+                    <div class="meta-tags">
+                        <span id="video-duration" class="tag">Duration: --:--</span>
+                        <span id="video-uploader" class="tag">Uploader: --</span>
+                        <span id="video-views" class="tag">Views: --</span>
+                    </div>
+                    <p id="video-desc" class="video-desc-trunc"></p>
+                </div>
+            </div>
+
+            <div class="formats-selection-row">
+                <div class="format-select-column">
+                    <h3>🎬 Video Stream <span class="optional-lbl">(Visuals only or combined)</span></h3>
+                    <div class="format-list-wrapper">
+                        <select id="video-format-select" size="6" class="format-select-list">
+                            <!-- Populated dynamically -->
+                        </select>
+                    </div>
+                </div>
+
+                <div class="format-select-column">
+                    <h3>🎵 Audio Stream <span class="optional-lbl">(Sound only)</span></h3>
+                    <div class="format-list-wrapper">
+                        <select id="audio-format-select" size="6" class="format-select-list">
+                            <!-- Populated dynamically -->
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <div class="action-footer">
+                <div class="mode-selector-wrapper">
+                    <label class="mode-label">⬇️ Download Mode</label>
+                    <div class="mode-buttons" id="mode-buttons">
+                        <button class="mode-btn active" data-mode="merge" id="mode-merge">🎬 Video + Audio (MKV)</button>
+                        <button class="mode-btn" data-mode="mp3" id="mode-mp3">🎵 Audio Only (MP3)</button>
+                        <button class="mode-btn" data-mode="video-only" id="mode-video-only">📹 Video Only</button>
+                        <button class="mode-btn" data-mode="audio-only" id="mode-audio-only">🔊 Audio Only (raw)</button>
+                    </div>
+                </div>
+                <button id="download-btn" class="btn btn-success">
+                    <span class="btn-text">⬇ Download</span>
+                    <span class="loader-spinner hidden"></span>
+                </button>
+            </div>
+        </section>
+
+        <!-- Progress Log Card (hidden by default) -->
+        <section id="progress-card" class="card progress-card hidden">
+            <h3>⏳ Operation Progress</h3>
+            
+            <div class="progress-bars-container">
+                <!-- Video Progress -->
+                <div id="video-progress-row" class="progress-row hidden">
+                    <div class="progress-meta">
+                        <span class="progress-title">🎬 Video Stream Download</span>
+                        <span id="video-progress-percent" class="progress-percent">0%</span>
+                    </div>
+                    <div class="progress-bar-track">
+                        <div id="video-progress-bar" class="progress-bar-fill" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <!-- Audio Progress -->
+                <div id="audio-progress-row" class="progress-row hidden">
+                    <div class="progress-meta">
+                        <span class="progress-title">🎵 Audio Stream Download</span>
+                        <span id="audio-progress-percent" class="progress-percent">0%</span>
+                    </div>
+                    <div class="progress-bar-track">
+                        <div id="audio-progress-bar" class="progress-bar-fill" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <!-- Merge / FFmpeg Progress -->
+                <div id="merge-progress-row" class="progress-row hidden">
+                    <div class="progress-meta">
+                        <span class="progress-title">⚙️ WebAssembly Muxing (ffmpeg.wasm)</span>
+                        <span id="merge-progress-status" class="progress-status">Muxing...</span>
+                    </div>
+                    <div class="progress-bar-track progress-striped">
+                        <div id="merge-progress-bar" class="progress-bar-fill progress-animated" style="width: 100%"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="log-console-wrapper">
+                <h4>Console Output Logger</h4>
+                <pre id="log-console" class="log-console">Initialized WASM Downloader. Waiting for download triggers...</pre>
+            </div>
+        </section>
+    </main>
+
+    <script type="module" src="app.js"></script>
+</body>
+</html>

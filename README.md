@@ -180,64 +180,49 @@ scoop install ffmpeg
 | YouTube | Full (videos, Shorts, live streams) |
 | More coming | PRs welcome |
 
-## Development
+## WebAssembly (WASM) Browser Version
+
+A WebAssembly port of the downloader is available in the `www/` directory. It runs entirely in the browser using Rust compiled to WASM for extraction and downloading, a Node.js CORS proxy to bypass security blocks, and `ffmpeg.wasm` to merge streams or convert audio to MP3 locally.
+
+### Features
+
+- **No Server-Side Downloader** — video parsing and download packet assembly occur entirely inside the user's browser thread.
+- **In-Browser FFmpeg** — merges separate HD video and audio streams (MKV), or converts audio directly to MP3.
+- **Strict CORP/COEP Isolation** — fully configured local asset pipeline allowing Web Workers to run under strict browser cross-origin isolation policies.
+
+### Building the WASM Module
+
+To compile the Rust extractor and downloader library to WebAssembly:
 
 ```sh
-# Run tests (unit + integration, no network)
-cargo test
-
-# Run tests including live network tests
-cargo test -- --include-ignored
-
-# Lint
-cargo clippy --all-features -- -D warnings
-cargo fmt --check
-
-# Coverage (requires cargo-llvm-cov)
-cargo llvm-cov --open
+# Requires wasm-pack installed (cargo install wasm-pack)
+wasm-pack build --target web --out-dir www/pkg
 ```
 
-### Adding an extractor
+This compiles the library and generates the WebAssembly wrapper `www/pkg/yt_dlp.js` along with the WASM binary.
 
-1. Create `src/extractor/yoursite.rs` implementing the `Extractor` trait:
+### Running Locally
 
-```rust
-use async_trait::async_trait;
-use reqwest::Client;
-use anyhow::Result;
-use crate::types::VideoInfo;
-use super::Extractor;
+To host the browser client and start the CORS proxy:
 
-pub struct YourSiteExtractor;
+1. **Start the CORS Proxy** (to route Google Video CDN requests and bypass CORS):
+   ```sh
+   node www/cors-proxy.js
+   ```
+   *Runs on `http://localhost:8080`*
 
-#[async_trait]
-impl Extractor for YourSiteExtractor {
-    fn name(&self) -> &str { "yoursite" }
+2. **Start the Web App Server** (implements COOP/COEP headers required for `ffmpeg.wasm` shared buffers):
+   ```sh
+   node www/server.js
+   ```
+   *Runs on `http://localhost:3000`*
 
-    fn suitable(&self, url: &str) -> bool {
-        url.contains("yoursite.com")
-    }
+Open `http://localhost:3000` in your browser.
 
-    async fn extract(&self, url: &str, client: &Client) -> Result<VideoInfo> {
-        // ... fetch and parse video info
-        todo!()
-    }
-}
-```
+## Contributors
 
-2. Register it in `src/extractor/mod.rs`:
-
-```rust
-pub mod yoursite;
-
-pub fn get_extractor(url: &str) -> Option<Box<dyn Extractor>> {
-    let extractors: Vec<Box<dyn Extractor>> = vec![
-        Box::new(YoutubeExtractor::new()),
-        Box::new(yoursite::YourSiteExtractor),  // add here
-    ];
-    extractors.into_iter().find(|e| e.suitable(url))
-}
-```
+- **Josh Finnie** — Original Author & Maintainer
+- **Iqbal Rifai** — Ported the downloader pipeline to WebAssembly, built the Node.js CORS proxy integration, and implemented the local browser-based `ffmpeg.wasm` multiplexing/MP3 conversion system.
 
 ## License
 
