@@ -1,328 +1,430 @@
-// Cloudflare Worker: Single-file Deployment (workers.js)
-// Serves static assets with COOP/COEP cross-origin headers, and provides CORS proxy routes.
+import init, { wasm_extract_info, wasm_download_format } from "./pkg/yt_dlp.js";
 
-const ASSETS_BASE_URL = "https://raw.githubusercontent.com/py7hon/yt-dlp.rs/main/www";
+// DOM elements
+const videoUrlInput = document.getElementById("video-url");
+const corsProxyInput = document.getElementById("cors-proxy");
+const fetchBtn = document.getElementById("fetch-btn");
+const downloadBtn = document.getElementById("download-btn");
+const resultsCard = document.getElementById("results-card");
+const progressCard = document.getElementById("progress-card");
 
-addEventListener('fetch', event => {
-    event.respondWith(handleRequest(event.request));
+const videoThumbnail = document.getElementById("video-thumbnail");
+const videoTitle = document.getElementById("video-title");
+const videoDuration = document.getElementById("video-duration");
+const videoUploader = document.getElementById("video-uploader");
+const videoViews = document.getElementById("video-views");
+const videoDesc = document.getElementById("video-desc");
+
+const videoFormatSelect = document.getElementById("video-format-select");
+const audioFormatSelect = document.getElementById("audio-format-select");
+
+const videoProgressRow = document.getElementById("video-progress-row");
+const videoProgressPercent = document.getElementById("video-progress-percent");
+const videoProgressBar = document.getElementById("video-progress-bar");
+
+const audioProgressRow = document.getElementById("audio-progress-row");
+const audioProgressPercent = document.getElementById("audio-progress-percent");
+const audioProgressBar = document.getElementById("audio-progress-bar");
+
+const mergeProgressRow = document.getElementById("merge-progress-row");
+const mergeProgressStatus = document.getElementById("merge-progress-status");
+const logConsoleEl = document.getElementById("log-console");
+
+// Mode buttons
+const modeButtons = document.querySelectorAll(".mode-btn");
+let downloadMode = "merge"; // merge | mp3 | video-only | audio-only
+
+modeButtons.forEach(btn => {
+    btn.addEventListener("click", () => {
+        modeButtons.forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        downloadMode = btn.dataset.mode;
+
+        // Show/hide selects based on mode
+        const videoCol = videoFormatSelect.closest(".format-select-column");
+        const audioCol = audioFormatSelect.closest(".format-select-column");
+        if (downloadMode === "mp3" || downloadMode === "audio-only") {
+            videoCol.style.opacity = "0.35";
+            videoCol.style.pointerEvents = "none";
+            audioCol.style.opacity = "1";
+            audioCol.style.pointerEvents = "";
+        } else if (downloadMode === "video-only") {
+            audioCol.style.opacity = "0.35";
+            audioCol.style.pointerEvents = "none";
+            videoCol.style.opacity = "1";
+            videoCol.style.pointerEvents = "";
+        } else {
+            videoCol.style.opacity = "1";
+            videoCol.style.pointerEvents = "";
+            audioCol.style.opacity = "1";
+            audioCol.style.pointerEvents = "";
+        }
+
+        // Update button label
+        const labels = {
+            "merge": "⬇ Download & Mux (MKV)",
+            "mp3": "🎵 Download as MP3",
+            "video-only": "📹 Download Video Only",
+            "audio-only": "🔊 Download Audio Only",
+        };
+        downloadBtn.querySelector(".btn-text").textContent = labels[downloadMode] || "⬇ Download";
+    });
 });
 
-async function handleRequest(request) {
-    const url = new URL(request.url);
-    const path = url.pathname;
+// App State
+let currentVideoInfo = null;
+let ffmpeg = null;
+let ffmpegLoaded = false;
 
-    // 1. CORS Proxy Route: /proxy/https://...
-    if (path.startsWith('/proxy/')) {
-        return handleProxy(request, path.substring(7));
-    }
-
-    // 2. Serve main static files (inline or proxy fallback)
-    if (path === '/' || path === '/index.html') {
-        return serveHtml(request);
-    }
-
-    // --- FIX INI MBAH: Intercept ffmpeg-core & Proxy dari CDN ---
-    // Karena file core terlalu besar dan sering gagal ditarik dari GitHub, 
-    // kita ambil langsung dari CDN tapi tetap injek COOP/COEP headers di Worker.
-    // Catatan: Ini menggunakan path v0.12.x. Jika ffmpeg.min.js kamu versi 0.11.x, 
-    // hapus "/umd" dari URL di bawah.
-    if (path === '/ffmpeg-core.js') {
-        return fetchAndServeAsset(path, 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.js');
-    }
-    if (path === '/ffmpeg-core.wasm') {
-        return fetchAndServeAsset(path, 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.wasm');
-    }
-    if (path === '/ffmpeg-core.worker.js') {
-        return fetchAndServeAsset(path, 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd/ffmpeg-core.worker.js');
-    }
-    // -------------------------------------------------------------
-
-    // 3. Serve other static/binary assets by streaming from the source repository
-    return fetchAndServeAsset(path);
+// Helpers
+function logConsole(message) {
+    const timestamp = new Date().toLocaleTimeString();
+    logConsoleEl.textContent += `\n[${timestamp}] ${message}`;
+    logConsoleEl.scrollTop = logConsoleEl.scrollHeight;
 }
 
-// Serves the main index.html with cross-origin isolation headers
-function serveHtml(request) {
-    const origin = new URL(request.url).origin;
-    const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>yt-dlp WASM - Browser YouTube Downloader</title>
-    <link rel="stylesheet" href="index.css">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=Plus+Jakarta+Sans:wght@300;400;600;700&display=swap" rel="stylesheet">
-    <script src="ffmpeg.min.js"></script>
-</head>
-<body>
-    <div class="glass-bg-accent-1"></div>
-    <div class="glass-bg-accent-2"></div>
-    
-    <main class="app-container">
-        <header class="app-header">
-            <div class="logo-area">
-                <span class="logo-badge">WASM</span>
-                <h1>yt-dlp<span class="accent-text">.rs</span></h1>
-            </div>
-            <p class="subtitle">Download & merge YouTube video & audio entirely client-side in your browser using WebAssembly & ffmpeg.wasm</p>
-        </header>
-
-        <section class="card config-card">
-            <div class="input-group-row">
-                <div class="input-field-wrapper url-field">
-                    <label for="video-url">YouTube Video URL</label>
-                    <input type="text" id="video-url" placeholder="https://www.youtube.com/watch?v=dQw4w9WgXcQ" value="https://www.youtube.com/watch?v=dQw4w9WgXcQ">
-                </div>
-                  <div class="input-field-wrapper proxy-field">
-                    <label for="cors-proxy">CORS Proxy URL <span class="info-tag">Optional</span></label>
-                    <input type="text" id="cors-proxy" placeholder="${origin}/proxy/" value="${origin}/proxy/">
-                </div>
-                <button id="fetch-btn" class="btn btn-primary">
-                    <span class="btn-text">Fetch Info</span>
-                    <span class="loader-spinner hidden"></span>
-                </button>
-            </div>
-            <div class="proxy-note">
-                <p>⚡ <strong>Cloudflare Worker:</strong> The proxy has been auto-configured to route through this Worker instance.</p>
-            </div>
-        </section>
-
-        <section id="results-card" class="card results-card hidden">
-            <div class="video-meta-row">
-                <div class="video-thumbnail-wrapper">
-                    <img id="video-thumbnail" src="" alt="Video Thumbnail">
-                </div>
-                <div class="video-info-details">
-                    <h2 id="video-title">Video Title</h2>
-                    <div class="meta-tags">
-                        <span id="video-duration" class="tag">Duration: --:--</span>
-                        <span id="video-uploader" class="tag">Uploader: --</span>
-                        <span id="video-views" class="tag">Views: --</span>
-                    </div>
-                    <p id="video-desc" class="video-desc-trunc"></p>
-                </div>
-            </div>
-
-            <div class="formats-selection-row">
-                <div class="format-select-column">
-                    <h3>🎬 Video Stream <span class="optional-lbl">(Visuals only or combined)</span></h3>
-                    <div class="format-list-wrapper">
-                        <select id="video-format-select" size="6" class="format-select-list">
-                        </select>
-                    </div>
-                </div>
-
-                <div class="format-select-column">
-                    <h3>🎵 Audio Stream <span class="optional-lbl">(Sound only)</span></h3>
-                    <div class="format-list-wrapper">
-                        <select id="audio-format-select" size="6" class="format-select-list">
-                        </select>
-                    </div>
-                </div>
-            </div>
-
-            <div class="action-footer">
-                <div class="mode-selector-wrapper">
-                    <label class="mode-label">⬇️ Download Mode</label>
-                    <div class="mode-buttons" id="mode-buttons">
-                        <button class="mode-btn active" data-mode="merge" id="mode-merge">🎬 Video + Audio (MKV)</button>
-                        <button class="mode-btn" data-mode="mp3" id="mode-mp3">🎵 Audio Only (MP3)</button>
-                        <button class="mode-btn" data-mode="video-only" id="mode-video-only">📹 Video Only</button>
-                        <button class="mode-btn" data-mode="audio-only" id="mode-audio-only">🔊 Audio Only (raw)</button>
-                    </div>
-                </div>
-                <button id="download-btn" class="btn btn-success">
-                    <span class="btn-text">⬇ Download</span>
-                    <span class="loader-spinner hidden"></span>
-                </button>
-            </div>
-        </section>
-
-        <section id="progress-card" class="card progress-card hidden">
-            <h3>⏳ Operation Progress</h3>
-            
-            <div class="progress-bars-container">
-                <div id="video-progress-row" class="progress-row hidden">
-                    <div class="progress-meta">
-                        <span class="progress-title">🎬 Video Stream Download</span>
-                        <span id="video-progress-percent" class="progress-percent">0%</span>
-                    </div>
-                    <div class="progress-bar-track">
-                        <div id="video-progress-bar" class="progress-bar-fill" style="width: 0%"></div>
-                    </div>
-                </div>
-
-                <div id="audio-progress-row" class="progress-row hidden">
-                    <div class="progress-meta">
-                        <span class="progress-title">🎵 Audio Stream Download</span>
-                        <span id="audio-progress-percent" class="progress-percent">0%</span>
-                    </div>
-                    <div class="progress-bar-track">
-                        <div id="audio-progress-bar" class="progress-bar-fill" style="width: 0%"></div>
-                    </div>
-                </div>
-
-                <div id="merge-progress-row" class="progress-row hidden">
-                    <div class="progress-meta">
-                        <span class="progress-title">⚙️ WebAssembly Muxing (ffmpeg.wasm)</span>
-                        <span id="merge-progress-status" class="progress-status">Muxing...</span>
-                    </div>
-                    <div class="progress-bar-track progress-striped">
-                        <div id="merge-progress-bar" class="progress-bar-fill progress-animated" style="width: 100%"></div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="log-console-wrapper">
-                <h4>Console Output Logger</h4>
-                <pre id="log-console" class="log-console">Initialized WASM Downloader. Waiting for download triggers...</pre>
-            </div>
-        </section>
-    </main>
-
-    <script type="module" src="app.js"></script>
-</body>
-</html>`;
-
-    return new Response(html, {
-        headers: {
-            'Content-Type': 'text/html; charset=utf-8',
-            'Cross-Origin-Opener-Policy': 'same-origin',
-            'Cross-Origin-Embedder-Policy': 'require-corp',
-            'Cross-Origin-Resource-Policy': 'cross-origin'
-        }
-    });
+function sanitizeFilename(name) {
+    return name.replace(/[\\/:*?"<>|]/g, "_").trim();
 }
 
-// Proxies/fetches static resources, now supports optional overrideUrl for CDNs
-async function fetchAndServeAsset(path, overrideUrl = null) {
-    // Jika overrideUrl diset (untuk file FFmpeg), pakai itu. Kalau tidak, ambil dari GitHub.
-    const assetUrl = overrideUrl || `${ASSETS_BASE_URL}${path}`;
-    const response = await fetch(assetUrl);
-
-    if (!response.ok) {
-        return new Response(`Asset ${path} not found. Build or configuration error.`, { status: 404 });
-    }
-
-    const headers = new Headers(response.headers);
-    headers.set('Cross-Origin-Opener-Policy', 'same-origin');
-    headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
-    headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
-    headers.delete('content-security-policy');
-
-    if (path.endsWith('.js')) {
-        headers.set('Content-Type', 'text/javascript');
-    } else if (path.endsWith('.wasm')) {
-        headers.set('Content-Type', 'application/wasm');
-    } else if (path.endsWith('.css')) {
-        headers.set('Content-Type', 'text/css');
-    }
-
-    return new Response(response.body, {
-        status: response.status,
-        statusText: response.statusText,
-        headers: headers
-    });
+function formatBytes(bytes) {
+    if (!bytes) return "unknown size";
+    const UNITS = ["B", "KiB", "MiB", "GiB"];
+    let size = bytes, idx = 0;
+    while (size >= 1024 && idx < UNITS.length - 1) { size /= 1024; idx++; }
+    return `${size.toFixed(2)} ${UNITS[idx]}`;
 }
 
-// Proxy Core Module
-async function handleProxy(request, targetUrlStr) {
-    if (request.method === 'OPTIONS') {
-        return new Response(null, {
-            headers: {
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, PUT, PATCH, DELETE',
-                'Access-Control-Allow-Headers': 'Content-Type, X-YouTube-Client-Name, X-YouTube-Client-Version, X-Cors-User-Agent, Range',
-                'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges',
-                'Access-Control-Allow-Credentials': 'true',
-                'Cross-Origin-Resource-Policy': 'cross-origin'
-            }
-        });
-    }
+function formatDuration(secs) {
+    if (!secs) return "00:00";
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    const s = Math.floor(secs % 60);
+    const pad = n => String(n).padStart(2, "0");
+    return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
 
-    let cleanUrlStr = decodeURIComponent(targetUrlStr);
-    if (cleanUrlStr.startsWith('https:/') && !cleanUrlStr.startsWith('https://')) {
-        cleanUrlStr = 'https://' + cleanUrlStr.substring(7);
-    } else if (cleanUrlStr.startsWith('http:/') && !cleanUrlStr.startsWith('http://')) {
-        cleanUrlStr = 'http://' + cleanUrlStr.substring(6);
+// Initialize WASM Downloader
+async function start() {
+    logConsole(`App Origin: ${window.location.origin}`);
+
+    // Auto-detect hosted/Worker proxy setup
+    const isLocalhostDev = window.location.hostname === "localhost" && window.location.port === "3000";
+    const isLocalIPDev = window.location.hostname === "127.0.0.1" && window.location.port === "3000";
+    if (!isLocalhostDev && !isLocalIPDev) {
+        corsProxyInput.value = `${window.location.origin}/proxy`;
+        logConsole(`Auto-configured CORS proxy target to: ${corsProxyInput.value}`);
     }
 
     try {
-        const targetUrl = new URL(cleanUrlStr);
-        const headers = new Headers(request.headers);
-
-        if (headers.has('x-cors-user-agent')) {
-            headers.set('user-agent', headers.get('x-cors-user-agent'));
-            headers.delete('x-cors-user-agent');
-        }
-
-        if (targetUrl.hostname.endsWith('youtube.com') || targetUrl.hostname.endsWith('googlevideo.com')) {
-            headers.set('origin', 'https://www.youtube.com');
-            headers.set('referer', 'https://www.youtube.com/');
-        }
-
-        if (targetUrl.hostname.endsWith('googlevideo.com')) {
-            headers.set('user-agent', 'com.google.ios.youtube/21.02.3 (iPhone16,2; U; CPU iPhone OS 18_3_2 like Mac OS X)');
-            headers.delete('accept-encoding');
-        }
-
-        headers.delete('host');
-        headers.delete('cookie');
-        for (const [key] of headers.entries()) {
-            if (key.startsWith('sec-')) {
-                headers.delete(key);
-            }
-        }
-
-        if (targetUrl.pathname.endsWith('/youtubei/v1/player')) {
-            try {
-                const cookieRes = await fetch('https://www.youtube.com/', {
-                    headers: {
-                        'user-agent': headers.get('user-agent') || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    }
-                });
-                const setCookies = cookieRes.headers.get('set-cookie');
-                if (setCookies) {
-                    const cookieStr = setCookies.split(',')
-                        .map(c => c.split(';')[0].trim())
-                        .filter(c => c && !c.includes('path=') && !c.includes('domain='))
-                        .join('; ');
-                    if (cookieStr) {
-                        headers.set('cookie', cookieStr);
-                    }
-                }
-            } catch (err) { }
-        }
-
-        const targetResponse = await fetch(targetUrl.href, {
-            method: request.method,
-            headers: headers,
-            body: request.method !== 'GET' && request.method !== 'HEAD' ? await request.arrayBuffer() : undefined,
-            redirect: 'follow'
-        });
-
-        const responseHeaders = new Headers(targetResponse.headers);
-
-        responseHeaders.set('Access-Control-Allow-Origin', '*');
-        responseHeaders.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
-        responseHeaders.set('Access-Control-Allow-Headers', 'Content-Type, X-YouTube-Client-Name, X-YouTube-Client-Version, X-Cors-User-Agent, Range');
-        responseHeaders.set('Access-Control-Expose-Headers', 'Content-Length, Content-Range, Accept-Ranges');
-        responseHeaders.set('Access-Control-Allow-Credentials', 'true');
-        responseHeaders.set('Cross-Origin-Resource-Policy', 'cross-origin');
-
-        responseHeaders.delete('cross-origin-opener-policy');
-        responseHeaders.delete('cross-origin-embedder-policy');
-        responseHeaders.delete('content-security-policy');
-
-        return new Response(targetResponse.body, {
-            status: targetResponse.status,
-            statusText: targetResponse.statusText,
-            headers: responseHeaders
-        });
-
-    } catch (err) {
-        return new Response(`Proxy Error: ${err.message}`, { status: 500 });
+        logConsole("Initializing Rust WebAssembly downloader module...");
+        await init();
+        logConsole("Rust WebAssembly module successfully initialized.");
+    } catch (e) {
+        logConsole(`ERROR: Failed to initialize WASM: ${e}`);
     }
 }
+
+// Load ffmpeg.wasm
+async function ensureFFmpegLoaded() {
+    if (ffmpegLoaded) return;
+
+    logConsole("Initializing ffmpeg.wasm framework...");
+    const { FFmpeg } = window.FFmpegWASM || window.FFmpegWasm || {};
+
+    ffmpeg = new FFmpeg();
+    ffmpeg.on("log", ({ message }) => logConsole(`[FFmpeg] ${message}`));
+
+    // Tentukan Base URL dari CDN
+    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
+
+    // Panggil fungsi load menggunakan toBlobURL (Pastikan FFmpegUtil sudah ter-load di HTML)
+    await ffmpeg.load({
+        coreURL: await FFmpegUtil.toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await FFmpegUtil.toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        workerURL: await FFmpegUtil.toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript')
+    });
+
+    ffmpegLoaded = true;
+    logConsole("ffmpeg.wasm core engine loaded successfully.");
+}
+
+// Fetch Video Info
+fetchBtn.addEventListener("click", async () => {
+    const url = videoUrlInput.value.trim();
+    let proxy = corsProxyInput.value.trim() || null;
+    if (proxy && !proxy.endsWith("/")) proxy += "/";
+
+    if (!url) { alert("Please enter a YouTube video URL."); return; }
+
+    resultsCard.classList.add("hidden");
+    progressCard.classList.remove("hidden");
+    fetchBtn.disabled = true;
+    fetchBtn.querySelector(".loader-spinner").classList.remove("hidden");
+
+    logConsole("--- Starting Video Extraction ---");
+    logConsole(`Target URL: ${url}`);
+    logConsole(`CORS Proxy: ${proxy || "NONE (Direct fetch)"}`);
+
+    try {
+        currentVideoInfo = await wasm_extract_info(url, proxy);
+        logConsole(`Successfully retrieved details for: "${currentVideoInfo.title}"`);
+
+        // Populate metadata
+        videoThumbnail.src = currentVideoInfo.thumbnail || "";
+        videoTitle.textContent = currentVideoInfo.title;
+        videoDuration.textContent = `Duration: ${formatDuration(currentVideoInfo.duration)}`;
+        videoUploader.textContent = `Uploader: ${currentVideoInfo.channel || currentVideoInfo.uploader || "Unknown"}`;
+        videoViews.textContent = `Views: ${currentVideoInfo.view_count ? currentVideoInfo.view_count.toLocaleString() : "unknown"}`;
+        videoDesc.textContent = currentVideoInfo.description || "";
+
+        // Populate Format Selectors
+        videoFormatSelect.innerHTML = "";
+        audioFormatSelect.innerHTML = "";
+
+        const formats = currentVideoInfo.formats || [];
+        logConsole(`Total formats received: ${formats.length}`);
+
+        // Video formats: has vcodec set and not "none"
+        const videoFormats = formats.filter(f =>
+            f.vcodec && f.vcodec !== "none" && f.url
+        ).sort((a, b) => (b.height || 0) - (a.height || 0));
+
+        // Audio formats: no vcodec (or vcodec === "none") AND has acodec
+        const audioFormats = formats.filter(f =>
+            f.acodec && f.acodec !== "none" && (!f.vcodec || f.vcodec === "none") && f.url
+        ).sort((a, b) => (b.abr || 0) - (a.abr || 0));
+
+        // If no separate streams, show combined formats in both lists
+        const combinedFormats = formats.filter(f =>
+            f.vcodec && f.vcodec !== "none" &&
+            f.acodec && f.acodec !== "none" &&
+            f.url
+        );
+
+        // Fill video select
+        if (videoFormats.length > 0) {
+            videoFormats.forEach(f => {
+                const size = f.filesize ? formatBytes(f.filesize) : (f.filesize_approx ? `~${formatBytes(f.filesize_approx)}` : "?");
+                const res = f.height ? `${f.height}p` : "?";
+                const fps = f.fps ? `@${Math.round(f.fps)}fps` : "";
+                const combined = (f.acodec && f.acodec !== "none") ? " [+Audio]" : "";
+                const opt = document.createElement("option");
+                opt.value = f.format_id;
+                opt.textContent = `${res}${fps} | ${f.ext} | ${f.vcodec}${combined} | ${size}`;
+                videoFormatSelect.appendChild(opt);
+            });
+        } else if (combinedFormats.length > 0) {
+            combinedFormats.forEach(f => {
+                const size = f.filesize ? formatBytes(f.filesize) : "?";
+                const res = f.height ? `${f.height}p` : "?";
+                const opt = document.createElement("option");
+                opt.value = f.format_id;
+                opt.textContent = `${res} | ${f.ext} | combined (${size})`;
+                videoFormatSelect.appendChild(opt);
+            });
+        }
+
+        // Fill audio select
+        if (audioFormats.length > 0) {
+            audioFormats.forEach(f => {
+                const size = f.filesize ? formatBytes(f.filesize) : (f.filesize_approx ? `~${formatBytes(f.filesize_approx)}` : "?");
+                const abr = f.abr ? `${Math.round(f.abr)}kbps` : "?kbps";
+                const opt = document.createElement("option");
+                opt.value = f.format_id;
+                opt.textContent = `${abr} | ${f.ext} | ${f.acodec} | ${size}`;
+                audioFormatSelect.appendChild(opt);
+            });
+        } else if (combinedFormats.length > 0) {
+            combinedFormats.forEach(f => {
+                const size = f.filesize ? formatBytes(f.filesize) : "?";
+                const opt = document.createElement("option");
+                opt.value = f.format_id;
+                opt.textContent = `combined audio | ${f.ext} | ${size}`;
+                audioFormatSelect.appendChild(opt);
+            });
+        }
+
+        logConsole(`Video formats: ${videoFormatSelect.options.length} | Audio formats: ${audioFormatSelect.options.length}`);
+        resultsCard.classList.remove("hidden");
+    } catch (e) {
+        logConsole(`ERROR: Failed to extract info: ${e}`);
+        alert("Failed to extract video details. Make sure your CORS proxy is active.");
+    } finally {
+        fetchBtn.disabled = false;
+        fetchBtn.querySelector(".loader-spinner").classList.add("hidden");
+    }
+});
+
+// Download Trigger
+downloadBtn.addEventListener("click", async () => {
+    if (!currentVideoInfo) return;
+
+    const proxy = (() => { const v = corsProxyInput.value.trim(); return v ? (v.endsWith("/") ? v : v + "/") : null; })();
+    const videoFormatId = videoFormatSelect.value;
+    const audioFormatId = audioFormatSelect.value;
+    const mode = downloadMode;
+
+    // Validate selections
+    const needsVideo = (mode === "merge" || mode === "video-only");
+    const needsAudio = (mode === "merge" || mode === "mp3" || mode === "audio-only");
+
+    if (needsVideo && !videoFormatId) { alert("Please select a video format."); return; }
+    if (needsAudio && !audioFormatId) { alert("Please select an audio format."); return; }
+
+    // Load FFmpeg for modes that need it
+    if (mode === "merge" || mode === "mp3") {
+        try {
+            await ensureFFmpegLoaded();
+        } catch (e) {
+            logConsole(`ERROR: FFmpeg loading failed: ${e}`);
+            alert("Could not load ffmpeg.wasm. Please check the console.");
+            return;
+        }
+    }
+
+    // Lock UI
+    downloadBtn.disabled = true;
+    downloadBtn.querySelector(".loader-spinner").classList.remove("hidden");
+    progressCard.classList.remove("hidden");
+    videoProgressRow.classList.add("hidden");
+    audioProgressRow.classList.add("hidden");
+    mergeProgressRow.classList.add("hidden");
+
+    // Re-fetch fresh stream URLs
+    logConsole("Re-fetching fresh stream URLs before download...");
+    let freshFormats = currentVideoInfo.formats;
+    try {
+        const freshInfo = await wasm_extract_info(currentVideoInfo.webpage_url || videoUrlInput.value.trim(), proxy);
+        freshFormats = freshInfo.formats;
+        logConsole("Fresh URLs obtained successfully.");
+    } catch (e) {
+        logConsole(`Warning: Could not re-fetch (${e}). Using cached URLs.`);
+    }
+
+    const findFormat = id => freshFormats.find(f => f.format_id === id) ||
+        currentVideoInfo.formats.find(f => f.format_id === id);
+    const freshVideo = needsVideo ? findFormat(videoFormatId) : null;
+    const freshAudio = needsAudio ? findFormat(audioFormatId) : null;
+
+    // Helper: download a format
+    async function downloadBytes(fmt, progressBar, progressPct, progressRow, label) {
+        progressRow.classList.remove("hidden");
+        progressBar.style.width = "0%";
+        progressPct.textContent = "0%";
+        logConsole(`Downloading ${label}: format ${fmt.format_id} (${fmt.protocol})`);
+        const bytes = await wasm_download_format(
+            fmt.url,
+            fmt.protocol,
+            JSON.stringify(fmt.http_headers || {}),
+            proxy,
+            (pos, total) => {
+                const pct = total > 0 ? ((pos / total) * 100).toFixed(1) : "...";
+                progressBar.style.width = total > 0 ? `${pct}%` : "50%";
+                progressPct.textContent = total > 0 ? `${pct}%` : `${pos} segs`;
+            }
+        );
+        progressBar.style.width = "100%";
+        progressPct.textContent = "100%";
+        logConsole(`${label} download complete (${formatBytes(bytes.length)}).`);
+        return bytes;
+    }
+
+    const title = sanitizeFilename(currentVideoInfo.title);
+
+    try {
+        // ── MODE: Video + Audio merged to MKV ──────────────────────────────────
+        if (mode === "merge") {
+            const vBytes = await downloadBytes(freshVideo, videoProgressBar, videoProgressPercent, videoProgressRow, "Video");
+            const aBytes = await downloadBytes(freshAudio, audioProgressBar, audioProgressPercent, audioProgressRow, "Audio");
+
+            mergeProgressRow.classList.remove("hidden");
+            mergeProgressStatus.textContent = "Muxing streams with ffmpeg.wasm...";
+            logConsole("Running FFmpeg mux...");
+
+            const vExt = freshVideo.ext || "mp4";
+            const aExt = freshAudio.ext || "m4a";
+            const outName = "output.mkv";
+
+            await ffmpeg.writeFile(`inv.${vExt}`, vBytes);
+            await ffmpeg.writeFile(`ina.${aExt}`, aBytes);
+            await ffmpeg.exec(["-i", `inv.${vExt}`, "-i", `ina.${aExt}`, "-c", "copy", outName]);
+
+            const outData = await ffmpeg.readFile(outName);
+            triggerBlobDownload(outData, `${title}.mkv`, "video/x-matroska");
+            logConsole("✅ MKV download complete!");
+
+            await ffmpeg.deleteFile(`inv.${vExt}`).catch(() => { });
+            await ffmpeg.deleteFile(`ina.${aExt}`).catch(() => { });
+            await ffmpeg.deleteFile(outName).catch(() => { });
+        }
+
+        // ── MODE: Audio → MP3 conversion ───────────────────────────────────────
+        else if (mode === "mp3") {
+            const aBytes = await downloadBytes(freshAudio, audioProgressBar, audioProgressPercent, audioProgressRow, "Audio");
+
+            mergeProgressRow.classList.remove("hidden");
+            mergeProgressStatus.textContent = "Converting to MP3 with ffmpeg.wasm...";
+            logConsole("Running FFmpeg MP3 conversion (libmp3lame)...");
+
+            const aExt = freshAudio.ext || "m4a";
+            const inName = `audio_in.${aExt}`;
+            const outName = "output.mp3";
+
+            await ffmpeg.writeFile(inName, aBytes);
+            await ffmpeg.exec([
+                "-i", inName,
+                "-vn",                  // no video
+                "-acodec", "libmp3lame",
+                "-q:a", "2",            // VBR ~190kbps
+                "-ar", "44100",
+                outName
+            ]);
+
+            const outData = await ffmpeg.readFile(outName);
+            triggerBlobDownload(outData, `${title}.mp3`, "audio/mpeg");
+            logConsole("✅ MP3 download complete!");
+
+            await ffmpeg.deleteFile(inName).catch(() => { });
+            await ffmpeg.deleteFile(outName).catch(() => { });
+        }
+
+        // ── MODE: Video Only ───────────────────────────────────────────────────
+        else if (mode === "video-only") {
+            const vBytes = await downloadBytes(freshVideo, videoProgressBar, videoProgressPercent, videoProgressRow, "Video");
+            triggerBlobDownload(vBytes, `${title}.${freshVideo.ext || "mp4"}`, "video/mp4");
+            logConsole("✅ Video download complete!");
+        }
+
+        // ── MODE: Audio Only (raw) ─────────────────────────────────────────────
+        else if (mode === "audio-only") {
+            const aBytes = await downloadBytes(freshAudio, audioProgressBar, audioProgressPercent, audioProgressRow, "Audio");
+            triggerBlobDownload(aBytes, `${title}.${freshAudio.ext || "m4a"}`, "audio/mp4");
+            logConsole("✅ Audio download complete!");
+        }
+
+    } catch (e) {
+        logConsole(`ERROR: ${e}`);
+        alert(`Download failed: ${e}`);
+    } finally {
+        downloadBtn.disabled = false;
+        downloadBtn.querySelector(".loader-spinner").classList.add("hidden");
+        mergeProgressRow.classList.add("hidden");
+    }
+});
+
+function triggerBlobDownload(bytes, filename, mimeType = "application/octet-stream") {
+    const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes.buffer || bytes);
+    const blob = new Blob([data], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+
+// Start
+start();
