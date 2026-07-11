@@ -145,42 +145,30 @@ async function toBlobURL(url, mimeType) {
     }
 }
 
-// Load ffmpeg.wasm dengan penangkap error ketat
 async function ensureFFmpegLoaded() {
     if (ffmpegLoaded) return;
 
     try {
         logConsole("Initializing ffmpeg.wasm framework...");
 
-        // Cek apakah library FFmpeg benar-benar terdeteksi di HTML
         const FFmpegObj = window.FFmpegWASM || window.FFmpegWasm || {};
         const FFmpeg = FFmpegObj.FFmpeg;
 
         if (!FFmpeg) {
-            throw new Error("Objek FFmpeg tidak ditemukan! Pastikan file ffmpeg.min.js termuat dengan benar.");
+            throw new Error("Objek FFmpeg tidak ditemukan! Pastikan file ffmpeg.min.js termuat.");
         }
 
         ffmpeg = new FFmpeg();
         ffmpeg.on("log", ({ message }) => logConsole(`[FFmpeg-Core] ${message}`));
 
-        // 🛑 FIX INI MBAH: Jangan tembak ke unpkg langsung! 
-        // Kosongkan baseURL agar fetch() menembak ke domain kamu sendiri (Worker)
-        // yang sudah kita modifikasi untuk mem-proxy unpkg + menyuntikkan header COEP.
-        const baseURL = '';
+        logConsole("Mendownload core engine dari Cloudflare R2 (Streaming)...");
 
-        logConsole("Mempersiapkan core files (meminta izin lewat Worker)...");
-
-        // Sekarang ini akan menembak ke /ffmpeg-core.js di servermu sendiri
-        const coreURL = await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript');
-        const wasmURL = await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm');
-        const workerURL = await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript');
-
-        logConsole("Semua file berhasil didownload! Memuat ke memori browser...");
-
+        // Langsung panggil path lokal. Worker akan mem-proxy ini ke R2 kamu
+        // dan mengembalikan file dengan header keamanan yang tepat.
         await ffmpeg.load({
-            coreURL: coreURL,
-            wasmURL: wasmURL,
-            workerURL: workerURL
+            coreURL: '/ffmpeg-core.js',
+            wasmURL: '/ffmpeg-core.wasm',
+            workerURL: '/ffmpeg-core.worker.js'
         });
 
         ffmpegLoaded = true;
