@@ -219,6 +219,33 @@ To host the browser client and start the CORS proxy:
 
 Open `http://localhost:3000` in your browser.
 
+## Cloudflare Deployment
+
+You can deploy this application to Cloudflare either as a **Cloudflare Pages** site (recommended, hosts static assets and proxy functions together) or as a single **Cloudflare Worker** script.
+
+### Method 1: Cloudflare Pages (Recommended)
+
+Cloudflare Pages natively hosts all static assets (no file size limits) and supports Functions for backend proxy routing.
+
+1. **Configure Headers:** The `www/_headers` file is already created to serve all static assets with the required `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers.
+2. **Build WASM:** Make sure your WASM module is built:
+   ```sh
+   wasm-pack build --target web --out-dir www/pkg
+   ```
+3. **Deploy:**
+   - Link your GitHub repository to Cloudflare Pages.
+   - Set the **Build Output Directory** to `www`.
+   - Leave the build command blank.
+   - Cloudflare will automatically deploy your static assets and route `/proxy/*` to the Pages Function inside `functions/proxy.js`.
+
+### Method 2: Cloudflare Workers (Single-File)
+
+If you prefer to deploy everything as a single Cloudflare Worker script:
+
+1. **Deploy workers.js:** Upload the [workers.js](file:///d:/projj/ytwasm/workers.js) file as your worker script.
+2. **Configure Assets Base URL:** Modify `ASSETS_BASE_URL` in `workers.js` to point to your GitHub repository or R2 bucket where the static resources (`www/` folder containing the JS/WASM packages) are pushed.
+3. The worker will automatically serve the application shell and route any `/proxy/*` requests seamlessly.
+
 ## Contributors
 
 - **Josh Finnie** — Original Author & Maintainer

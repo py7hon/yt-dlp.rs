@@ -107,6 +107,15 @@ function formatDuration(secs) {
 // Initialize WASM Downloader
 async function start() {
     logConsole(`App Origin: ${window.location.origin}`);
+    
+    // Auto-detect hosted/Worker proxy setup
+    const isLocalhostDev = window.location.hostname === "localhost" && window.location.port === "3000";
+    const isLocalIPDev = window.location.hostname === "127.0.0.1" && window.location.port === "3000";
+    if (!isLocalhostDev && !isLocalIPDev) {
+        corsProxyInput.value = `${window.location.origin}/proxy`;
+        logConsole(`Auto-configured CORS proxy target to: ${corsProxyInput.value}`);
+    }
+
     try {
         logConsole("Initializing Rust WebAssembly downloader module...");
         await init();
